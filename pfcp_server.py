@@ -29,6 +29,20 @@ PFCP_SESSION_MODIFICATION_RESPONSE = 53
 PFCP_SESSION_DELETION_REQUEST = 54
 PFCP_SESSION_DELETION_RESPONSE = 55
 
+# Mapping of PFCP message types to their text descriptions
+PFCP_MESSAGE_TYPES = {
+    PFCP_HEARTBEAT_REQUEST: "PFCP_HEARTBEAT_REQUEST",
+    PFCP_HEARTBEAT_RESPONSE: "PFCP_HEARTBEAT_RESPONSE",
+    PFCP_ASSOCIATION_SETUP_REQUEST: "PFCP_ASSOCIATION_SETUP_REQUEST",
+    PFCP_ASSOCIATION_SETUP_RESPONSE: "PFCP_ASSOCIATION_SETUP_RESPONSE",
+    PFCP_SESSION_ESTABLISHMENT_REQUEST: "PFCP_SESSION_ESTABLISHMENT_REQUEST",
+    PFCP_SESSION_ESTABLISHMENT_RESPONSE: "PFCP_SESSION_ESTABLISHMENT_RESPONSE",
+    PFCP_SESSION_MODIFICATION_REQUEST: "PFCP_SESSION_MODIFICATION_REQUEST",
+    PFCP_SESSION_MODIFICATION_RESPONSE: "PFCP_SESSION_MODIFICATION_RESPONSE",
+    PFCP_SESSION_DELETION_REQUEST: "PFCP_SESSION_DELETION_REQUEST",
+    PFCP_SESSION_DELETION_RESPONSE: "PFCP_SESSION_DELETION_RESPONSE"
+}
+
 lock = Lock()
 
 # Storage for sessions, neighbors, statistics, and monitor mode
@@ -239,17 +253,25 @@ def load_state():
     global sessions, neighbors, pfcp_stats
     with lock:
         if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                state = json.load(f)
-                sessions = state.get('sessions', {})
-                neighbors = state.get('neighbors', {})
-                pfcp_stats = state.get('pfcp_stats', pfcp_stats)
-            print("State loaded from", STATE_FILE)
+            try:
+                if os.path.getsize(STATE_FILE) > 0:
+                    with open(STATE_FILE, 'r') as f:
+                        state = json.load(f)
+                        sessions = state.get('sessions', {})
+                        neighbors = state.get('neighbors', {})
+                        pfcp_stats = state.get('pfcp_stats', pfcp_stats)
+                    print("State loaded from", STATE_FILE)
+                else:
+                    print(f"{STATE_FILE} is empty. Initializing state.")
+            except json.JSONDecodeError:
+                print(f"Error decoding JSON from {STATE_FILE}. Initializing state.")
+        else:
+            print(f"{STATE_FILE} does not exist. Initializing state.")
 
 def signal_handler(sig, frame):
     print('Terminating...')
     save_state()
-    sys.exit(0)
+    os._exit(0)
 
 def print_if_monitor_mode(message):
     if monitor_mode:
@@ -418,26 +440,32 @@ def process_message(sock, addr, message):
         print_if_monitor_mode(f"Error processing message: {e}")
 
 def start_pfcp_server():
+    global running
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("", PFCP_PORT))
     print("PFCP server started, listening on port", PFCP_PORT)
 
-    while True:
+    while running:
         data, addr = sock.recvfrom(4096)
         process_message(sock, addr, data)
+    sock.close()
 
-def send_heartbeat_requests(sock):
-    while True:
+def send_heartbeat_requests():
+    global running
+    while running:
         time.sleep(HEARTBEAT_INTERVAL)
-        for seid, neighbor in neighbors.items():
-            if time.time() - neighbor['last_heartbeat'] > HEARTBEAT_TIMEOUT:
-                print_if_monitor_mode(f"Deleting neighbor {seid} due to heartbeat timeout")
-                del neighbors[seid]
-                continue
-            header = PFCPHeader(PFCP_VERSION, PFCP_HEARTBEAT_REQUEST, 0, seid, 0)
-            message = PFCPMessage(header, [])
-            sock.sendto(message.encode(), neighbor['address'])
-            pfcp_stats['sent'][PFCP_HEARTBEAT_REQUEST] += 1
+        with lock:
+            for seid, neighbor in list(neighbors.items()):
+                if time.time() - neighbor['last_heartbeat'] > HEARTBEAT_TIMEOUT:
+                    print_if_monitor_mode(f"Deleting neighbor {seid} due to heartbeat timeout")
+                    del neighbors[seid]
+                    continue
+                header = PFCPHeader(PFCP_VERSION, PFCP_HEARTBEAT_REQUEST, 0, seid, 0)
+                message = PFCPMessage(header, [])
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(message.encode(), neighbor['address'])
+                sock.close()
+                pfcp_stats['sent'][PFCP_HEARTBEAT_REQUEST] += 1
 
 # Function to handle show commands
 def show_subscriber_summary():
@@ -468,10 +496,10 @@ def show_pfcp_stats():
     print("\nPFCP Statistics:")
     print("Received Messages:")
     for msg_type, count in pfcp_stats['received'].items():
-        print(f"  {msg_type}: {count}")
+        print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
     print("Sent Messages:")
     for msg_type, count in pfcp_stats['sent'].items():
-        print(f"  {msg_type}: {count}")
+        print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
 
 def clear_pfcp_stats():
     global pfcp_stats
@@ -481,8 +509,21 @@ def clear_pfcp_stats():
     }
     print("PFCP statistics cleared")
 
+def show_help():
+    print("Available commands:")
+    print("  show subscriber summary - Display subscriber summary")
+    print("  show upf peers - Display UPF peers information")
+    print("  show pfcp stats - Display PFCP statistics")
+    print("  clear pfcp stats - Clear PFCP statistics")
+    print("  mon - Enable monitor mode")
+    print("  dis - Disable monitor mode")
+    print("  help - Show this help message")
+
 def handle_show_command(command):
     global monitor_mode
+    command = command.strip().lower()
+    if command == "":
+        return
     if command == "show subscriber summary":
         show_subscriber_summary()
     elif command == "show upf peers":
@@ -497,11 +538,14 @@ def handle_show_command(command):
     elif command == "dis":
         monitor_mode = False
         print("Monitor mode disabled")
+    elif command == "help":
+        show_help()
     else:
         print("Unknown show command")
 
 def cli_thread():
-    while True:
+    global running
+    while running:
         try:
             command = input("> ")
             handle_show_command(command)
@@ -516,23 +560,28 @@ if __name__ == "__main__":
     # Load previous state if exists
     load_state()
 
+    running = True
+
     # Start PFCP server in a separate thread
     server_thread = threading.Thread(target=start_pfcp_server)
     server_thread.daemon = True
     server_thread.start()
 
     # Start sending heartbeat requests in a separate thread
-    heartbeat_thread = threading.Thread(target=send_heartbeat_requests, args=(server_thread,))
+    heartbeat_thread = threading.Thread(target=send_heartbeat_requests)
     heartbeat_thread.daemon = True
     heartbeat_thread.start()
 
-    # Start the CLI in a separate thread
-    cli_thread = threading.Thread(target=cli_thread)
-    cli_thread.daemon = True
-    cli_thread.start()
+    # Start the CLI in the main thread
+    try:
+        cli_thread()
+    except (EOFError, KeyboardInterrupt):
+        print("\nExiting CLI...")
 
-    # Wait for the CLI thread to finish
-    cli_thread.join()
+    # Set running to False to stop the threads
+    running = False
+    server_thread.join()
+    heartbeat_thread.join()
 
     # Save state on exit
     save_state()
