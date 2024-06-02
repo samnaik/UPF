@@ -219,6 +219,15 @@ class PFCPMessage:
             message += ie.encode()
         return message
 
+def save_state():
+    try:
+        with lock:
+            with open(STATE_FILE, 'w') as f:
+                json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
+    except RecursionError:
+        print("Recursion error while saving state. Trying again...")
+
+
     @staticmethod
     def decode(data):
         header = PFCPHeader.decode(data[:12])
@@ -244,7 +253,7 @@ class PFCPMessage:
             offset += 4 + length
         return PFCPMessage(header, ies)
 
-def save_state():
+        save_state()
     try:
         with lock:
             with open(STATE_FILE, 'w') as f:
@@ -296,6 +305,7 @@ def handle_heartbeat_request(sock, addr, message):
         response_message = PFCPMessage(response_header, [])
         sock.sendto(response_message.encode(), addr)
         pfcp_stats['sent'][PFCP_HEARTBEAT_RESPONSE] += 1
+        print_if_monitor_mode("Sent Heartbeat Response")
     except Exception as e:
         print_if_monitor_mode(f"Error handling heartbeat request: {e}")
 
@@ -335,6 +345,7 @@ def handle_association_setup_request(sock, addr, message):
         sock.sendto(response_message.encode(), addr)
         pfcp_stats['sent'][PFCP_ASSOCIATION_SETUP_RESPONSE] += 1
         save_state()
+        print_if_monitor_mode("Sent Association Setup Response")
     except Exception as e:
         print_if_monitor_mode(f"Error handling association setup request: {e}")
 
@@ -375,6 +386,7 @@ def handle_session_establishment_request(sock, addr, message):
         sock.sendto(response_message.encode(), addr)
         pfcp_stats['sent'][PFCP_SESSION_ESTABLISHMENT_RESPONSE] += 1
         save_state()
+        print_if_monitor_mode("Sent Session Establishment Response")
     except Exception as e:
         print_if_monitor_mode(f"Error handling session establishment request: {e}")
 
@@ -404,6 +416,7 @@ def handle_session_modification_request(sock, addr, message):
             response_message = PFCPMessage(response_header, [NodeID('192.168.1.1')])
             sock.sendto(response_message.encode(), addr)
             pfcp_stats['sent'][PFCP_SESSION_MODIFICATION_RESPONSE] += 1
+            print_if_monitor_mode("Sent Session Modification Response")
             save_state()
         else:
             print_if_monitor_mode("Session ID not found")
@@ -425,6 +438,7 @@ def handle_session_deletion_request(sock, addr, message):
             sock.sendto(response_message.encode(), addr)
             pfcp_stats['sent'][PFCP_SESSION_DELETION_RESPONSE] += 1
             save_state()
+            print_if_monitor_mode("Sent Session Deletion Response")
         else:
             print_if_monitor_mode("Session ID not found")
     except Exception as e:
@@ -512,19 +526,35 @@ def show_upf_peers():
 def show_pfcp_stats():
     print("\nPFCP Statistics:")
     print("Received Messages:")
-    for msg_type, count in pfcp_stats['received'].items():
-        print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
+    for msg_type, count in sorted(pfcp_stats['received'].items()):
+        if count > 0 and msg_type in {
+            PFCP_HEARTBEAT_REQUEST,
+            PFCP_ASSOCIATION_SETUP_REQUEST,
+            PFCP_SESSION_ESTABLISHMENT_REQUEST,
+            PFCP_SESSION_MODIFICATION_REQUEST,
+            PFCP_SESSION_DELETION_REQUEST
+        }:
+            print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
     print("Sent Messages:")
-    for msg_type, count in pfcp_stats['sent'].items():
-        print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
+    for msg_type, count in sorted(pfcp_stats['sent'].items()):
+        if count > 0 and msg_type in {
+            PFCP_HEARTBEAT_RESPONSE,
+            PFCP_ASSOCIATION_SETUP_RESPONSE,
+            PFCP_SESSION_ESTABLISHMENT_RESPONSE,
+            PFCP_SESSION_MODIFICATION_RESPONSE,
+            PFCP_SESSION_DELETION_RESPONSE,
+            PFCP_HEARTBEAT_REQUEST
+        }:
+            print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
+
+
 
 def clear_pfcp_stats():
     global pfcp_stats
-    pfcp_stats = {
-        'received': {key: 0 for key in pfcp_stats['received']},
-        'sent': {key: 0 for key in pfcp_stats['sent']}
-    }
+    pfcp_stats['received'] = {key: 0 for key in pfcp_stats['received']}
+    pfcp_stats['sent'] = {key: 0 for key in pfcp_stats['sent']}
     print("PFCP statistics cleared")
+
 
 def show_help():
     print("Available commands:")
