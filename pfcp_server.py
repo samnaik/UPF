@@ -22,6 +22,8 @@ PFCP_HEARTBEAT_REQUEST = 1
 PFCP_HEARTBEAT_RESPONSE = 2
 PFCP_ASSOCIATION_SETUP_REQUEST = 5
 PFCP_ASSOCIATION_SETUP_RESPONSE = 6
+PFCP_ASSOCIATION_RELEASE_REQUEST = 7
+PFCP_ASSOCIATION_RELEASE_RESPONSE = 8
 PFCP_SESSION_ESTABLISHMENT_REQUEST = 50
 PFCP_SESSION_ESTABLISHMENT_RESPONSE = 51
 PFCP_SESSION_MODIFICATION_REQUEST = 52
@@ -40,6 +42,8 @@ PFCP_MESSAGE_TYPES = {
     PFCP_SESSION_MODIFICATION_REQUEST: "PFCP_SESSION_MODIFICATION_REQUEST",
     PFCP_SESSION_MODIFICATION_RESPONSE: "PFCP_SESSION_MODIFICATION_RESPONSE",
     PFCP_SESSION_DELETION_REQUEST: "PFCP_SESSION_DELETION_REQUEST",
+    PFCP_ASSOCIATION_RELEASE_REQUEST: "PFCP_ASSOCIATION_RELEASE_REQUEST",
+    PFCP_ASSOCIATION_RELEASE_RESPONSE: "PFCP_ASSOCIATION_RELEASE_RESPONSE",
     PFCP_SESSION_DELETION_RESPONSE: "PFCP_SESSION_DELETION_RESPONSE"
 }
 
@@ -56,6 +60,7 @@ pfcp_stats = {
         PFCP_HEARTBEAT_RESPONSE: 0,
         PFCP_ASSOCIATION_SETUP_REQUEST: 0,
         PFCP_ASSOCIATION_SETUP_RESPONSE: 0,
+        PFCP_ASSOCIATION_RELEASE_REQUEST: 0,  # Add this line
         PFCP_SESSION_ESTABLISHMENT_REQUEST: 0,
         PFCP_SESSION_ESTABLISHMENT_RESPONSE: 0,
         PFCP_SESSION_MODIFICATION_REQUEST: 0,
@@ -68,6 +73,7 @@ pfcp_stats = {
         PFCP_HEARTBEAT_RESPONSE: 0,
         PFCP_ASSOCIATION_SETUP_REQUEST: 0,
         PFCP_ASSOCIATION_SETUP_RESPONSE: 0,
+        PFCP_ASSOCIATION_RELEASE_RESPONSE: 0,  # Add this line
         PFCP_SESSION_ESTABLISHMENT_REQUEST: 0,
         PFCP_SESSION_ESTABLISHMENT_RESPONSE: 0,
         PFCP_SESSION_MODIFICATION_REQUEST: 0,
@@ -208,6 +214,8 @@ class PFCPHeader:
         version_message_type, message_type, length, seid, seq = struct.unpack(PFCP_HEADER_FORMAT, data)
         return PFCPHeader(version_message_type >> 5, message_type, length, seid, seq)
 
+
+
 class PFCPMessage:
     def __init__(self, header, ies):
         self.header = header
@@ -217,15 +225,9 @@ class PFCPMessage:
         message = self.header.encode()
         for ie in self.ies:
             message += ie.encode()
+        self.header.length = len(message)  # Update the length field in the header
+        message = self.header.encode() + message[12:]  # Reconstruct the message with the updated length
         return message
-
-def save_state():
-    try:
-        with lock:
-            with open(STATE_FILE, 'w') as f:
-                json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
-    except RecursionError:
-        print("Recursion error while saving state. Trying again...")
 
 
     @staticmethod
@@ -254,6 +256,15 @@ def save_state():
         return PFCPMessage(header, ies)
 
         save_state()
+    try:
+        with lock:
+            with open(STATE_FILE, 'w') as f:
+                json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
+    except RecursionError:
+        print("Recursion error while saving state. Trying again...")
+        save_state()
+
+def save_state():
     try:
         with lock:
             with open(STATE_FILE, 'w') as f:
@@ -296,23 +307,22 @@ def print_if_monitor_mode(message):
 
 # Function to handle PFCP heartbeat request
 def handle_heartbeat_request(sock, addr, message):
-    print_if_monitor_mode("Sent Heartbeat Response")
     try:
-        print_if_monitor_mode("Received Heartbeat Request")
+        print_if_monitor_mode("\n===== [PFCP_HEARTBEAT_REQUEST] Received =====")
         pfcp_stats['received'][PFCP_HEARTBEAT_REQUEST] += 1
         header = PFCPHeader.decode(message[:12])
         response_header = PFCPHeader(PFCP_VERSION, PFCP_HEARTBEAT_RESPONSE, 0, header.seid, header.seq)
         response_message = PFCPMessage(response_header, [])
-        sock.sendto(response_message.encode(), addr)
+        sock.sendto(response_message.encode() if isinstance(response_message, str) else response_message, addr)
         pfcp_stats['sent'][PFCP_HEARTBEAT_RESPONSE] += 1
-        print_if_monitor_mode("Sent Heartbeat Response")
+        print_if_monitor_mode("----- [PFCP_HEARTBEAT_RESPONSE] Sent -----")
     except Exception as e:
         print_if_monitor_mode(f"Error handling heartbeat request: {e}")
 
 # Function to handle PFCP heartbeat response
 def handle_heartbeat_response(addr, seid):
     try:
-        print_if_monitor_mode("Received Heartbeat Response")
+        print_if_monitor_mode("\n===== [PFCP_HEARTBEAT_RESPONSE] Received =====")
         pfcp_stats['received'][PFCP_HEARTBEAT_RESPONSE] += 1
         if seid in neighbors:
             neighbors[seid]['last_heartbeat'] = time.time()
@@ -323,9 +333,8 @@ def handle_heartbeat_response(addr, seid):
 
 # Function to handle PFCP association setup request
 def handle_association_setup_request(sock, addr, message):
-    print_if_monitor_mode("Sent Association Setup Response")
     try:
-        print_if_monitor_mode("Received Association Setup Request")
+        print_if_monitor_mode("\n===== [PFCP_ASSOCIATION_SETUP_REQUEST] Received =====")
         pfcp_stats['received'][PFCP_ASSOCIATION_SETUP_REQUEST] += 1
         header = PFCPHeader.decode(message[:12])
         node_id = None
@@ -345,15 +354,36 @@ def handle_association_setup_request(sock, addr, message):
         sock.sendto(response_message.encode(), addr)
         pfcp_stats['sent'][PFCP_ASSOCIATION_SETUP_RESPONSE] += 1
         save_state()
-        print_if_monitor_mode("Sent Association Setup Response")
+        print_if_monitor_mode("----- [PFCP_ASSOCIATION_SETUP_RESPONSE] Sent -----")
     except Exception as e:
         print_if_monitor_mode(f"Error handling association setup request: {e}")
 
+def handle_association_release_request(sock, addr, message):
+    try:
+        print_if_monitor_mode("\n===== [PFCP_ASSOCIATION_RELEASE_REQUEST] Received =====")
+        pfcp_stats['received'][PFCP_ASSOCIATION_RELEASE_REQUEST] += 1
+        header = PFCPHeader.decode(message[:12])
+        if header.seid in neighbors:
+            print_if_monitor_mode(f"Deleting neighbor: {header.seid}")
+            del neighbors[header.seid]
+            response_header = PFCPHeader(PFCP_VERSION, PFCP_ASSOCIATION_RELEASE_RESPONSE, 0, header.seid, header.seq)
+            response_message = PFCPMessage(response_header, [])
+            sock.sendto(response_message.encode(), addr)
+            pfcp_stats['sent'][PFCP_ASSOCIATION_RELEASE_RESPONSE] += 1
+            save_state()
+            print_if_monitor_mode("----- [PFCP_ASSOCIATION_RELEASE_RESPONSE] Sent -----")
+        else:
+            print_if_monitor_mode(f"Association not found: {header.seid}")
+    except Exception as e:
+        print_if_monitor_mode(f"Error handling association release request: {e}")
+        raise
+
+
+
 # Function to handle PFCP session establishment request
 def handle_session_establishment_request(sock, addr, message):
-    print_if_monitor_mode("Sent Session Establishment Response")
     try:
-        print_if_monitor_mode("Received Session Establishment Request")
+        print_if_monitor_mode("\n===== [PFCP_SESSION_ESTABLISHMENT_REQUEST] Received =====")
         pfcp_stats['received'][PFCP_SESSION_ESTABLISHMENT_REQUEST] += 1
         header = PFCPHeader.decode(message[:12])
         session_id = header.seid
@@ -371,30 +401,46 @@ def handle_session_establishment_request(sock, addr, message):
             ie_data = message[offset+4:offset+4+length]
             if ie_type == IEType.NODE_ID:
                 session['node_id'] = NodeID.decode(ie_data).node_id
+            elif ie_type == IEType.F_SEID:
+                f_seid = FSEID.decode(ie_data)
+                session['f_seid'] = f_seid.seid
             elif ie_type == IEType.CREATE_PDR:
-                session['pdrs'].append(CreatePDR.decode(ie_data).pdr_id)
+                pdr_id = CreatePDR.decode(ie_data).pdr_id
+                session['pdrs'].append(pdr_id)
+                print_if_monitor_mode(f"PDR ID: {pdr_id}")
             elif ie_type == IEType.CREATE_FAR:
-                session['fars'].append(CreateFAR.decode(ie_data).far_id)
+                far_id = CreateFAR.decode(ie_data).far_id
+                session['fars'].append(far_id)
+                print_if_monitor_mode(f"FAR ID: {far_id}")
             elif ie_type == IEType.QOS_PARAMETERS:
-                session['qos_parameters'] = QoSParameters.decode(ie_data)
+                qos_parameters = QoSParameters.decode(ie_data)
+                session['qos_parameters'] = qos_parameters
+                print_if_monitor_mode(f"QoS Parameters: Priority: {qos_parameters.priority}, "
+                                      f"Packet Delay: {qos_parameters.packet_delay}, "
+                                      f"Packet Loss: {qos_parameters.packet_loss}")
             elif ie_type == IEType.CREATE_URR:
-                session['urrs'].append(CreateURR.decode(ie_data))
+                urr = CreateURR.decode(ie_data)
+                session['urrs'].append(urr)
+                print_if_monitor_mode(f"URR: ID: {urr.urr_id}, Measurement Period: {urr.measurement_period}")
             offset += 4 + length
         sessions[session_id] = session
         response_header = PFCPHeader(PFCP_VERSION, PFCP_SESSION_ESTABLISHMENT_RESPONSE, 0, session_id, header.seq)
-        response_message = PFCPMessage(response_header, [NodeID('192.168.1.1')])
-        sock.sendto(response_message.encode(), addr)
+        f_seid_ie = FSEID(session_id, "192.168.1.1").encode()
+        response_ies = [f_seid_ie]
+        response_message = PFCPMessage(response_header, response_ies).encode()
+        response_header.length = len(response_message)
+        response_message = response_header.encode() + response_message[12:]
+        sock.sendto(response_message.encode() if isinstance(response_message, str) else response_message, addr)  # encode only if response_message is a string
         pfcp_stats['sent'][PFCP_SESSION_ESTABLISHMENT_RESPONSE] += 1
         save_state()
-        print_if_monitor_mode("Sent Session Establishment Response")
+        print_if_monitor_mode("----- [PFCP_SESSION_ESTABLISHMENT_RESPONSE] Sent -----")
     except Exception as e:
         print_if_monitor_mode(f"Error handling session establishment request: {e}")
 
 # Function to handle PFCP session modification request
 def handle_session_modification_request(sock, addr, message):
-    print_if_monitor_mode("Sent Session Modification Response")
     try:
-        print_if_monitor_mode("Received Session Modification Request")
+        print_if_monitor_mode("\n===== [PFCP_SESSION_MODIFICATION_REQUEST] Received =====")
         pfcp_stats['received'][PFCP_SESSION_MODIFICATION_REQUEST] += 1
         header = PFCPHeader.decode(message[:12])
         session_id = header.seid
@@ -416,7 +462,7 @@ def handle_session_modification_request(sock, addr, message):
             response_message = PFCPMessage(response_header, [NodeID('192.168.1.1')])
             sock.sendto(response_message.encode(), addr)
             pfcp_stats['sent'][PFCP_SESSION_MODIFICATION_RESPONSE] += 1
-            print_if_monitor_mode("Sent Session Modification Response")
+            print_if_monitor_mode("----- [PFCP_SESSION_MODIFICATION_RESPONSE] Sent -----")
             save_state()
         else:
             print_if_monitor_mode("Session ID not found")
@@ -425,9 +471,8 @@ def handle_session_modification_request(sock, addr, message):
 
 # Function to handle PFCP session deletion request
 def handle_session_deletion_request(sock, addr, message):
-    print_if_monitor_mode("Sent Session Deletion Response")
     try:
-        print_if_monitor_mode("Received Session Deletion Request")
+        print_if_monitor_mode("\n===== [PFCP_SESSION_DELETION_REQUEST] Received =====")
         pfcp_stats['received'][PFCP_SESSION_DELETION_REQUEST] += 1
         header = PFCPHeader.decode(message[:12])
         session_id = header.seid
@@ -438,7 +483,7 @@ def handle_session_deletion_request(sock, addr, message):
             sock.sendto(response_message.encode(), addr)
             pfcp_stats['sent'][PFCP_SESSION_DELETION_RESPONSE] += 1
             save_state()
-            print_if_monitor_mode("Sent Session Deletion Response")
+            print_if_monitor_mode("----- [PFCP_SESSION_DELETION_RESPONSE] Sent -----")
         else:
             print_if_monitor_mode("Session ID not found")
     except Exception as e:
@@ -455,6 +500,8 @@ def process_message(sock, addr, message):
             handle_heartbeat_response(addr, header.seid)
         elif message_type == PFCP_ASSOCIATION_SETUP_REQUEST:
             handle_association_setup_request(sock, addr, message)
+        elif message_type == PFCP_ASSOCIATION_RELEASE_REQUEST:
+            handle_association_release_request(sock, addr, message)
         elif message_type == PFCP_SESSION_ESTABLISHMENT_REQUEST:
             handle_session_establishment_request(sock, addr, message)
         elif message_type == PFCP_SESSION_MODIFICATION_REQUEST:
@@ -462,9 +509,11 @@ def process_message(sock, addr, message):
         elif message_type == PFCP_SESSION_DELETION_REQUEST:
             handle_session_deletion_request(sock, addr, message)
         else:
-            print_if_monitor_mode("Unknown message type received")
+            print_if_monitor_mode(f"Unknown message type received: {message_type}")
     except Exception as e:
         print_if_monitor_mode(f"Error processing message: {e}")
+
+
 
 def start_pfcp_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -523,6 +572,7 @@ def show_upf_peers():
         print(f"  Last Heartbeat: {time.ctime(peer['last_heartbeat'])}")
         print()
 
+
 def show_pfcp_stats():
     print("\nPFCP Statistics:")
     print("Received Messages:")
@@ -546,8 +596,6 @@ def show_pfcp_stats():
             PFCP_HEARTBEAT_REQUEST
         }:
             print(f"  {PFCP_MESSAGE_TYPES.get(msg_type, 'Unknown')}: {count}")
-
-
 
 def clear_pfcp_stats():
     global pfcp_stats
