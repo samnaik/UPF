@@ -97,7 +97,7 @@ class NodeID:
         self.node_id = node_id
 
     def encode(self):
-        ie_type = IEType.NODE_ID
+        ie_type = 60  # Example IE Type for NodeID
         length = len(self.node_id) + 1
         node_id_type = 0
         return struct.pack("!HHB", ie_type, length, node_id_type) + self.node_id.encode()
@@ -107,6 +107,7 @@ class NodeID:
         ie_type, length, node_id_type = struct.unpack("!HHB", data[:5])
         node_id = data[5:5 + length - 1].decode()
         return NodeID(node_id)
+
 
 class RecoveryTimeStamp:
     def __init__(self, timestamp):
@@ -207,13 +208,13 @@ class PFCPHeader:
         self.seq = seq
 
     def encode(self):
-        return struct.pack(PFCP_HEADER_FORMAT, self.version << 5, self.message_type, self.length, self.seid, self.seq)
+        return struct.pack("!BBHII", self.version << 5, self.message_type, self.length, self.seid, self.seq)
 
     @staticmethod
     def decode(data):
-        version_message_type, message_type, length, seid, seq = struct.unpack(PFCP_HEADER_FORMAT, data)
-        return PFCPHeader(version_message_type >> 5, message_type, length, seid, seq)
-
+        version_message_type, message_type, length, seid, seq = struct.unpack("!BBHII", data)
+        version = version_message_type >> 5
+        return PFCPHeader(version, message_type, length, seid, seq)
 
 
 class PFCPMessage:
@@ -225,10 +226,7 @@ class PFCPMessage:
         message = self.header.encode()
         for ie in self.ies:
             message += ie.encode()
-        self.header.length = len(message)  # Update the length field in the header
-        message = self.header.encode() + message[12:]  # Reconstruct the message with the updated length
         return message
-
 
     @staticmethod
     def decode(data):
@@ -238,31 +236,11 @@ class PFCPMessage:
         while offset < len(data):
             ie_type, length = struct.unpack("!HH", data[offset:offset+4])
             ie_data = data[offset+4:offset+4+length]
-            if ie_type == IEType.NODE_ID:
+            if ie_type == 60:  # Example IE Type for NodeID
                 ies.append(NodeID.decode(ie_data))
-            elif ie_type == IEType.RECOVERY_TIME_STAMP:
-                ies.append(RecoveryTimeStamp.decode(ie_data))
-            elif ie_type == IEType.F_SEID:
-                ies.append(FSEID.decode(ie_data))
-            elif ie_type == IEType.CREATE_PDR:
-                ies.append(CreatePDR.decode(ie_data))
-            elif ie_type == IEType.CREATE_FAR:
-                ies.append(CreateFAR.decode(ie_data))
-            elif ie_type == IEType.QOS_PARAMETERS:
-                ies.append(QoSParameters.decode(ie_data))
-            elif ie_type == IEType.CREATE_URR:
-                ies.append(CreateURR.decode(ie_data))
+            # Add other IE decodings here
             offset += 4 + length
         return PFCPMessage(header, ies)
-
-        save_state()
-    try:
-        with lock:
-            with open(STATE_FILE, 'w') as f:
-                json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
-    except RecursionError:
-        print("Recursion error while saving state. Trying again...")
-        save_state()
 
 def save_state():
     try:
@@ -307,17 +285,23 @@ def print_if_monitor_mode(message):
 
 # Function to handle PFCP heartbeat request
 def handle_heartbeat_request(sock, addr, message):
+    print_if_monitor_mode("Received Heartbeat Request")
+    pfcp_stats['received'][PFCP_HEARTBEAT_REQUEST] += 1
+
+    # Decode the PFCP header from the message
+    header = PFCPHeader.decode(message[:12])
+    response_header = PFCPHeader(PFCP_VERSION, PFCP_HEARTBEAT_RESPONSE, 0, header.seid, header.seq)
+    response_message = PFCPMessage(response_header, [])
+
     try:
-        print_if_monitor_mode("\n===== [PFCP_HEARTBEAT_REQUEST] Received =====")
-        pfcp_stats['received'][PFCP_HEARTBEAT_REQUEST] += 1
-        header = PFCPHeader.decode(message[:12])
-        response_header = PFCPHeader(PFCP_VERSION, PFCP_HEARTBEAT_RESPONSE, 0, header.seid, header.seq)
-        response_message = PFCPMessage(response_header, [])
-        sock.sendto(response_message.encode() if isinstance(response_message, str) else response_message, addr)
+        # Convert PFCPMessage to bytes
+        response_message_bytes = response_message.encode()
+        sock.sendto(response_message_bytes, addr)
         pfcp_stats['sent'][PFCP_HEARTBEAT_RESPONSE] += 1
-        print_if_monitor_mode("----- [PFCP_HEARTBEAT_RESPONSE] Sent -----")
     except Exception as e:
-        print_if_monitor_mode(f"Error handling heartbeat request: {e}")
+        print(f"Error encoding and sending heartbeat response: {e}")
+
+
 
 # Function to handle PFCP heartbeat response
 def handle_heartbeat_response(addr, seid):
@@ -380,11 +364,12 @@ def handle_association_release_request(sock, addr, message):
 
 
 
-# Function to handle PFCP session establishment request
 def handle_session_establishment_request(sock, addr, message):
     try:
         print_if_monitor_mode("\n===== [PFCP_SESSION_ESTABLISHMENT_REQUEST] Received =====")
         pfcp_stats['received'][PFCP_SESSION_ESTABLISHMENT_REQUEST] += 1
+
+        # Decode the PFCP header
         header = PFCPHeader.decode(message[:12])
         session_id = header.seid
         session = {
@@ -395,6 +380,8 @@ def handle_session_establishment_request(sock, addr, message):
             'qos_parameters': None,
             'urrs': []
         }
+
+        # Decode Information Elements (IEs)
         offset = 12
         while offset < len(message):
             ie_type, length = struct.unpack("!HH", message[offset:offset+4])
@@ -423,19 +410,29 @@ def handle_session_establishment_request(sock, addr, message):
                 session['urrs'].append(urr)
                 print_if_monitor_mode(f"URR: ID: {urr.urr_id}, Measurement Period: {urr.measurement_period}")
             offset += 4 + length
+
         sessions[session_id] = session
+
+        # Create response header and IEs
         response_header = PFCPHeader(PFCP_VERSION, PFCP_SESSION_ESTABLISHMENT_RESPONSE, 0, session_id, header.seq)
         f_seid_ie = FSEID(session_id, "192.168.1.1").encode()
         response_ies = [f_seid_ie]
         response_message = PFCPMessage(response_header, response_ies).encode()
+
+        # Update the length field in the header
         response_header.length = len(response_message)
         response_message = response_header.encode() + response_message[12:]
-        sock.sendto(response_message.encode() if isinstance(response_message, str) else response_message, addr)  # encode only if response_message is a string
+
+        # Send response
+        sock.sendto(response_message, addr)
         pfcp_stats['sent'][PFCP_SESSION_ESTABLISHMENT_RESPONSE] += 1
         save_state()
         print_if_monitor_mode("----- [PFCP_SESSION_ESTABLISHMENT_RESPONSE] Sent -----")
     except Exception as e:
         print_if_monitor_mode(f"Error handling session establishment request: {e}")
+
+
+
 
 # Function to handle PFCP session modification request
 def handle_session_modification_request(sock, addr, message):
