@@ -25,8 +25,6 @@ class IEType:
     F_SEID = 57
     CREATE_PDR = 1
     CREATE_FAR = 3
-    QOS_PARAMETERS = 101  # Hypothetical IE Type for QoS Parameters
-    CREATE_URR = 102  # Hypothetical IE Type for Create URR
 
 class NodeID:
     def __init__(self, node_id):
@@ -85,19 +83,22 @@ class PFCPMessage:
         return PFCPMessage(header, ies)
 
 def send_pfcp_message(sock, server_address, message):
-    sock.sendto(message.encode(), server_address)
-    data, _ = sock.recvfrom(4096)
-    return PFCPMessage.decode(data)
+    try:
+        sock.sendto(message.encode(), server_address)
+        data, _ = sock.recvfrom(4096)
+        return PFCPMessage.decode(data)
+    except Exception as e:
+        print(f"Error sending PFCP message: {e}")
 
 def send_heartbeat_request(sock, server_address):
     print("Sending Heartbeat Request")
     header = PFCPHeader(PFCP_VERSION, PFCP_HEARTBEAT_REQUEST, 0, 0, 1)
     message = PFCPMessage(header, [])
     response = send_pfcp_message(sock, server_address, message)
-    if response.header.message_type == PFCP_HEARTBEAT_RESPONSE:
+    if response and response.header.message_type == PFCP_HEARTBEAT_RESPONSE:
         print("Received Heartbeat Response")
     else:
-        print("Unexpected response")
+        print("Unexpected response or no response")
 
 def send_association_setup_request(sock, server_address):
     print("Sending Association Setup Request")
@@ -105,10 +106,10 @@ def send_association_setup_request(sock, server_address):
     node_id = NodeID('TestNodeID')
     message = PFCPMessage(header, [node_id])
     response = send_pfcp_message(sock, server_address, message)
-    if response.header.message_type == PFCP_ASSOCIATION_SETUP_RESPONSE:
+    if response and response.header.message_type == PFCP_ASSOCIATION_SETUP_RESPONSE:
         print("Received Association Setup Response")
     else:
-        print("Unexpected response")
+        print("Unexpected response or no response")
 
 def send_session_establishment_request(sock, server_address, seid):
     print("Sending Session Establishment Request")
@@ -116,10 +117,10 @@ def send_session_establishment_request(sock, server_address, seid):
     node_id = NodeID('TestNodeID')
     message = PFCPMessage(header, [node_id])
     response = send_pfcp_message(sock, server_address, message)
-    if response.header.message_type == PFCP_SESSION_ESTABLISHMENT_RESPONSE:
+    if response and response.header.message_type == PFCP_SESSION_ESTABLISHMENT_RESPONSE:
         print("Received Session Establishment Response")
     else:
-        print("Unexpected response")
+        print("Unexpected response or no response")
 
 def send_session_modification_request(sock, server_address, seid):
     print("Sending Session Modification Request")
@@ -127,10 +128,10 @@ def send_session_modification_request(sock, server_address, seid):
     node_id = NodeID('TestNodeID')
     message = PFCPMessage(header, [node_id])
     response = send_pfcp_message(sock, server_address, message)
-    if response.header.message_type == PFCP_SESSION_MODIFICATION_RESPONSE:
+    if response and response.header.message_type == PFCP_SESSION_MODIFICATION_RESPONSE:
         print("Received Session Modification Response")
     else:
-        print("Unexpected response")
+        print("Unexpected response or no response")
 
 def send_session_deletion_request(sock, server_address, seid):
     print("Sending Session Deletion Request")
@@ -138,10 +139,10 @@ def send_session_deletion_request(sock, server_address, seid):
     node_id = NodeID('TestNodeID')
     message = PFCPMessage(header, [node_id])
     response = send_pfcp_message(sock, server_address, message)
-    if response.header.message_type == PFCP_SESSION_DELETION_RESPONSE:
+    if response and response.header.message_type == PFCP_SESSION_DELETION_RESPONSE:
         print("Received Session Deletion Response")
     else:
-        print("Unexpected response")
+        print("Unexpected response or no response")
 
 if __name__ == "__main__":
     server_address = ('localhost', PFCP_PORT)
