@@ -7,7 +7,7 @@ import os
 import signal
 import sys
 import readline  # For command history and line editing
-from threading import Lock
+from threading import Event, Lock
 
 # PFCP Constants
 PFCP_PORT = 8805
@@ -44,6 +44,7 @@ PFCP_MESSAGE_TYPES = {
 }
 
 lock = Lock()
+stop_event = Event()
 
 # Storage for sessions, neighbors, statistics, and monitor mode
 sessions = {}
@@ -244,10 +245,14 @@ class PFCPMessage:
         return PFCPMessage(header, ies)
 
 def save_state():
-    with lock:
-        with open(STATE_FILE, 'w') as f:
-            json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
-        print("State saved to", STATE_FILE)
+    try:
+        with lock:
+            with open(STATE_FILE, 'w') as f:
+                json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
+            print("State saved to", STATE_FILE)
+    except RecursionError:
+        print("Recursion error while saving state. Trying again...")
+        save_state()
 
 def load_state():
     global sessions, neighbors, pfcp_stats
@@ -270,8 +275,9 @@ def load_state():
 
 def signal_handler(sig, frame):
     print('Terminating...')
+    stop_event.set()
     save_state()
-    os._exit(0)
+    os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
 
 def print_if_monitor_mode(message):
     if monitor_mode:
@@ -440,19 +446,23 @@ def process_message(sock, addr, message):
         print_if_monitor_mode(f"Error processing message: {e}")
 
 def start_pfcp_server():
-    global running
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("", PFCP_PORT))
     print("PFCP server started, listening on port", PFCP_PORT)
 
-    while running:
-        data, addr = sock.recvfrom(4096)
-        process_message(sock, addr, data)
+    while not stop_event.is_set():
+        try:
+            sock.settimeout(1)
+            data, addr = sock.recvfrom(4096)
+            process_message(sock, addr, data)
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print_if_monitor_mode(f"Error receiving data: {e}")
     sock.close()
 
 def send_heartbeat_requests():
-    global running
-    while running:
+    while not stop_event.is_set():
         time.sleep(HEARTBEAT_INTERVAL)
         with lock:
             for seid, neighbor in list(neighbors.items()):
@@ -544,23 +554,27 @@ def handle_show_command(command):
         print("Unknown show command")
 
 def cli_thread():
-    global running
-    while running:
+    while not stop_event.is_set():
         try:
             command = input("> ")
             handle_show_command(command)
         except (EOFError, KeyboardInterrupt):
             print("\nExiting CLI...")
+            stop_event.set()
             break
 
 if __name__ == "__main__":
+    def signal_handler(sig, frame):
+        print('Terminating...')
+        stop_event.set()
+        save_state()
+        os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Load previous state if exists
     load_state()
-
-    running = True
 
     # Start PFCP server in a separate thread
     server_thread = threading.Thread(target=start_pfcp_server)
@@ -573,13 +587,9 @@ if __name__ == "__main__":
     heartbeat_thread.start()
 
     # Start the CLI in the main thread
-    try:
-        cli_thread()
-    except (EOFError, KeyboardInterrupt):
-        print("\nExiting CLI...")
+    cli_thread()
 
-    # Set running to False to stop the threads
-    running = False
+    # Wait for the threads to finish
     server_thread.join()
     heartbeat_thread.join()
 
