@@ -249,7 +249,6 @@ def save_state():
         with lock:
             with open(STATE_FILE, 'w') as f:
                 json.dump({'sessions': sessions, 'neighbors': neighbors, 'pfcp_stats': pfcp_stats}, f)
-            print("State saved to", STATE_FILE)
     except RecursionError:
         print("Recursion error while saving state. Trying again...")
         save_state()
@@ -264,7 +263,10 @@ def load_state():
                         state = json.load(f)
                         sessions = state.get('sessions', {})
                         neighbors = state.get('neighbors', {})
-                        pfcp_stats = state.get('pfcp_stats', pfcp_stats)
+                        pfcp_stats = {
+                            'received': {int(k): v for k, v in state.get('pfcp_stats', {}).get('received', {}).items()},
+                            'sent': {int(k): v for k, v in state.get('pfcp_stats', {}).get('sent', {}).items()}
+                        }
                     print("State loaded from", STATE_FILE)
                 else:
                     print(f"{STATE_FILE} is empty. Initializing state.")
@@ -285,6 +287,7 @@ def print_if_monitor_mode(message):
 
 # Function to handle PFCP heartbeat request
 def handle_heartbeat_request(sock, addr, message):
+    print_if_monitor_mode("Sent Heartbeat Response")
     try:
         print_if_monitor_mode("Received Heartbeat Request")
         pfcp_stats['received'][PFCP_HEARTBEAT_REQUEST] += 1
@@ -310,6 +313,7 @@ def handle_heartbeat_response(addr, seid):
 
 # Function to handle PFCP association setup request
 def handle_association_setup_request(sock, addr, message):
+    print_if_monitor_mode("Sent Association Setup Response")
     try:
         print_if_monitor_mode("Received Association Setup Request")
         pfcp_stats['received'][PFCP_ASSOCIATION_SETUP_REQUEST] += 1
@@ -336,6 +340,7 @@ def handle_association_setup_request(sock, addr, message):
 
 # Function to handle PFCP session establishment request
 def handle_session_establishment_request(sock, addr, message):
+    print_if_monitor_mode("Sent Session Establishment Response")
     try:
         print_if_monitor_mode("Received Session Establishment Request")
         pfcp_stats['received'][PFCP_SESSION_ESTABLISHMENT_REQUEST] += 1
@@ -375,6 +380,7 @@ def handle_session_establishment_request(sock, addr, message):
 
 # Function to handle PFCP session modification request
 def handle_session_modification_request(sock, addr, message):
+    print_if_monitor_mode("Sent Session Modification Response")
     try:
         print_if_monitor_mode("Received Session Modification Request")
         pfcp_stats['received'][PFCP_SESSION_MODIFICATION_REQUEST] += 1
@@ -406,6 +412,7 @@ def handle_session_modification_request(sock, addr, message):
 
 # Function to handle PFCP session deletion request
 def handle_session_deletion_request(sock, addr, message):
+    print_if_monitor_mode("Sent Session Deletion Response")
     try:
         print_if_monitor_mode("Received Session Deletion Request")
         pfcp_stats['received'][PFCP_SESSION_DELETION_REQUEST] += 1
